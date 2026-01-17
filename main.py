@@ -1,70 +1,128 @@
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
+import httpx
 import phonenumbers
 from phonenumbers import geocoder, carrier, timezone
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# লগিং সেটআপ (ত্রুটি দেখার জন্য)
+# লগিং সেটআপ
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# /start কমান্ডের ফাংশন
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "স্বাগতম! 🤖\n\n"
-        "যেকোনো ফোন নম্বর (কান্ট্রি কোড সহ) পাঠান, আমি তার তথ্য দেব।\n"
-        "উদাহরণ: +88017XXXXXXXX"
-    )
+# --- কনফিগারেশন (আপনার টোকেন এখানে সরাসরি বসানো হয়েছে) ---
+TOKEN = '8538714337:AAFC9kxVTvojWm-uTSS7df6gsI4wOeYINTI'
+TERABOX_API = "https://terabox.pikaapis.workers.dev/?url="
+TG_INFO_API = "https://telegram-info.rakibsarvar12.workers.dev/?name="
 
-# নম্বর প্রসেস করার ফাংশন
-async def number_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    number_text = update.message.text
-    
+# --- ফাংশন: ফোন নম্বর ডিটেইলস ---
+def get_phone_info(number_text):
     try:
-        # নম্বর পার্স করা
-        parsed_number = phonenumbers.parse(number_text)
-        
-        # নম্বরটি সঠিক কিনা যাচাই করা
-        if not phonenumbers.is_valid_number(parsed_number):
-            await update.message.reply_text("❌ নম্বরটি সঠিক নয়। দয়া করে কান্ট্রি কোড সহ সঠিক নম্বর দিন।")
-            return
+        parsed = phonenumbers.parse(number_text)
+        if not phonenumbers.is_valid_number(parsed):
+            return None
+        return {
+            "country": geocoder.description_for_number(parsed, "en"),
+            "carrier": carrier.name_for_number(parsed, "en"),
+            "timezone": ", ".join(timezone.time_zones_for_number(parsed)),
+            "format": phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+        }
+    except:
+        return None
 
-        # তথ্য বের করা
-        country = geocoder.description_for_number(parsed_number, "en")
-        sim_carrier = carrier.name_for_number(parsed_number, "en")
-        time_zones = timezone.time_zones_for_number(parsed_number)
-        
-        # ফরম্যাট করা উত্তর
-        response = (
-            f"📱 **Phone Number Info**\n"
-            f"━━━━━━━━━━━━━━━━━━\n"
-            f"🌍 **Country:** {country}\n"
-            f"📡 **Carrier:** {sim_carrier}\n"
-            f"⏰ **Timezone:** {', '.join(time_zones)}\n"
-            f"🔢 **Valid:** Yes"
-        )
-        
-        await update.message.reply_text(response, parse_mode='Markdown')
+# --- হ্যান্ডলার: /start ---
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_name = update.effective_user.first_name
+    welcome_msg = (
+        f"✨ **Hello, {user_name}!** ✨\n\n"
+        "I am your **Professional Multi-Tool Bot**. 🚀\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "📍 **Available Services:**\n"
+        "📞 **Phone Info:** Send number with + (e.g. +880...)\n"
+        "📦 **Terabox:** Send any Terabox link.\n"
+        "👤 **TG User:** Send `@username` to search.\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "🔹 *Developed by Tech Master*"
+    )
+    await update.message.reply_text(welcome_msg, parse_mode=ParseMode.MARKDOWN)
 
-    except phonenumbers.NumberParseException:
-        await update.message.reply_text("❌ দয়া করে নম্বরের শুরুতে কান্ট্রি কোড দিন (যেমন: +880...)।")
-    except Exception as e:
-        await update.message.reply_text(f"একটি সমস্যা হয়েছে: {e}")
+# --- মেইন মেসেজ প্রসেসর ---
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    
+    # ১. টেলিগ্রাম ইউজারনেম (@username)
+    if text.startswith('@'):
+        username = text.replace('@', '')
+        await update.message.reply_chat_action("typing")
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(f"{TG_INFO_API}{username}", timeout=15)
+                data = response.json()
+                if data.get('status') or data.get('ok'):
+                    res = data.get('result', data)
+                    info = (
+                        f"👤 **Telegram User Data**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"🆔 **ID:** `{res.get('id')}`\n"
+                        f"🏷️ **Name:** {res.get('first_name', 'N/A')}\n"
+                        f"🔗 **Username:** @{res.get('username', username)}\n"
+                        f"📝 **Bio:** {res.get('bio', 'N/A')}"
+                    )
+                    await update.message.reply_text(info, parse_mode=ParseMode.MARKDOWN)
+                else:
+                    await update.message.reply_text("❌ User not found!")
+            except:
+                await update.message.reply_text("⚠️ API Error!")
+
+    # ২. টেরাবক্স লিঙ্ক
+    elif "terabox" in text:
+        await update.message.reply_chat_action("typing")
+        async with httpx.AsyncClient() as client:
+            try:
+                response = await client.get(f"{TERABOX_API}{text}", timeout=20)
+                data = response.json()
+                if data.get('url'):
+                    dl_msg = (
+                        f"📦 **Terabox Link Generated**\n"
+                        f"━━━━━━━━━━━━━━━━━━━━\n"
+                        f"📄 **File:** `{data.get('filename', 'Direct File')}`\n"
+                        f"⚖️ **Size:** {data.get('size', 'N/A')}\n\n"
+                        f"🚀 [Download Now]({data.get('url')})"
+                    )
+                    await update.message.reply_text(dl_msg, parse_mode=ParseMode.MARKDOWN)
+                else:
+                    await update.message.reply_text("❌ Could not get link!")
+            except:
+                await update.message.reply_text("⚠️ API Offline!")
+
+    # ৩. ফোন নম্বর (+ দিয়ে শুরু)
+    elif text.startswith('+'):
+        info = get_phone_info(text)
+        if info:
+            res_msg = (
+                f"📱 **Phone Info Found**\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"🌍 **Country:** {info['country']}\n"
+                f"📡 **Carrier:** {info['carrier']}\n"
+                f"⏰ **Timezone:** {info['timezone']}\n"
+                f"🔢 **Formatted:** `{info['format']}`"
+            )
+            await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text("❌ Invalid Number!")
+
+    else:
+        await update.message.reply_text("❓ Send a Phone Number (+), Terabox Link, or @Username.")
 
 if __name__ == '__main__':
-    # আপনার টেলিগ্রাম বটের টোকেন এখানে দিন
-    TOKEN = 'YOUR_BOT_TOKEN_HERE'
-    
+    # অ্যাপ্লিকেশন তৈরি
     application = ApplicationBuilder().token(TOKEN).build()
     
     # হ্যান্ডলার যোগ করা
-    start_handler = CommandHandler('start', start)
-    info_handler = MessageHandler(filters.TEXT & (~filters.COMMAND), number_info)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    application.add_handler(start_handler)
-    application.add_handler(info_handler)
-    
-    print("বট চালু হয়েছে...")
+    print("Admin, Your Professional Bot is starting...")
     application.run_polling()
